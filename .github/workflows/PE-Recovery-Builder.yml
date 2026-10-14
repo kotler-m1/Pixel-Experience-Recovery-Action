@@ -1,0 +1,156 @@
+name: Pixel Experience Recovery Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_URL:
+        description: 'Pixel Experience Manifest URL'
+        required: true
+        default: 'https://github.com/PixelExperience/manifest'
+      MANIFEST_BRANCH:
+        description: 'Pixel Experience Branch'
+        required: true
+        default: 'fourteen'
+        type: choice
+        options:
+          - fourteen
+          - thirteen
+          - twelve
+      DEVICE_TREE_URL:
+        description: 'Device Tree URL'
+        required: true
+        default: 'https://github.com/kotler-m1/android_device_lava_LXX521-recovery.git'
+      DEVICE_TREE_BRANCH:
+        description: 'Device Tree Branch'
+        required: true
+        default: 'fam-12.1-stockfrag'
+      DEVICE_PATH:
+        description: 'Device Tree Path (relative to workspace root)'
+        required: true
+        default: 'device/lava/lxx521'
+      DEVICE_NAME:
+        description: 'Device Codename'
+        required: true
+        default: 'lxx521'
+      MAKEFILE_NAME:
+        description: 'Device Makefile Prefix (e.g. pe_lxx521, aosp_lxx521)'
+        required: true
+        default: 'pe_lxx521'
+      BUILD_TARGET:
+        description: 'Target Image to Build'
+        required: true
+        default: 'vendorbootimage'
+        type: choice
+        options:
+          - recoveryimage
+          - vendorbootimage
+          - bootimage
+
+jobs:
+  build:
+    name: Build Pixel Experience Recovery
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clean Runner Space & Configure Swap
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 16384
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      - name: Verify 16 GiB Swap Space
+        run: |
+          CURRENT_SWAP_MB=$(free -m | awk '/^Swap:/ {print $2}')
+          echo "Current Swap size: ${CURRENT_SWAP_MB} MB"
+          
+          if [ "$CURRENT_SWAP_MB" -lt 16384 ]; then
+            echo "Allocating additional Swap to ensure 16 GiB target..."
+            sudo swapoff -a || true
+            sudo fallocate -l 16G /swapfile_extra || sudo dd if=/dev/zero of=/swapfile_extra bs=1M count=16384
+            sudo chmod 600 /swapfile_extra
+            sudo mkswap /swapfile_extra
+            sudo swapon /swapfile_extra
+          fi
+          
+          echo "Current Memory Status:"
+          free -h
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gawk git-core diffstat unzip texinfo gcc-multilib build-essential \
+            chrpath socat cpio python3 python3-pip python3-pexpect xz-utils \
+            debianutils iputils-ping python3-git python3-jinja2 libegl1-mesa \
+            libsdl1.2-dev xterm python3-subunit mesa-common-dev zstd liblz4-tool \
+            bc bison flex g++-multilib git gnupg gperf lib32ncurses5-dev \
+            lib32z1-dev liblibc6-dev-i386 libncurses5 libncurses5-dev \
+            libreadline-dev libgl1-mesa-dev libxml2-utils xsltproc zlib1g-dev
+
+      - name: Install Repo Tool
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Initialize & Sync Pixel Experience Source
+        run: |
+          mkdir workspace && cd workspace
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          repo init -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
+          repo sync -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+      - name: Clone Device Tree
+        run: |
+          cd workspace
+          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+
+      - name: Build Pixel Experience Recovery Target
+        run: |
+          cd workspace
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          
+          lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch ${{ github.event.inputs.MAKEFILE_NAME }}-userdebug
+          
+          make clean
+          make ${{ github.event.inputs.BUILD_TARGET }} -j$(nproc --all)
+
+      - name: Prepare Built Images
+        run: |
+          cd workspace
+          mkdir -p output
+          OUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+          
+          if [ -f "$OUT_PATH/recovery.img" ]; then
+            cp "$OUT_PATH/recovery.img" output/
+          fi
+          if [ -f "$OUT_PATH/vendor_boot.img" ]; then
+            cp "$OUT_PATH/vendor_boot.img" output/
+          fi
+          if [ -f "$OUT_PATH/boot.img" ]; then
+            cp "$OUT_PATH/boot.img" output/
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PE-Recovery-${{ github.event.inputs.DEVICE_NAME }}
+          path: workspace/output/*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        if: success()
+        with:
+          tag_name: PE-Recovery-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
+          name: Pixel Experience Recovery for ${{ github.event.inputs.DEVICE_NAME }}
+          files: workspace/output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
