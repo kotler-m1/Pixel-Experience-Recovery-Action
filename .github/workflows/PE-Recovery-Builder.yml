@@ -3,12 +3,8 @@ name: Pixel Experience Recovery Builder
 on:
   workflow_dispatch:
     inputs:
-      MANIFEST_URL:
-        description: 'Pixel Experience Manifest URL'
-        required: true
-        default: 'https://github.com/PixelExperience/manifest'
       MANIFEST_BRANCH:
-        description: 'Pixel Experience Branch'
+        description: 'Pixel Experience Manifest Branch'
         required: true
         default: 'fourteen'
         type: choice
@@ -16,141 +12,168 @@ on:
           - fourteen
           - thirteen
           - twelve
-      DEVICE_TREE_URL:
-        description: 'Device Tree URL'
+      DEVICE_TREE:
+        description: 'Custom Recovery Tree' 
         required: true
         default: 'https://github.com/kotler-m1/android_device_lava_LXX521-recovery.git'
       DEVICE_TREE_BRANCH:
-        description: 'Device Tree Branch'
+        description: 'Custom Recovery Tree Branch' 
         required: true
-        default: 'fam-12.1-stockfrag'
+        default: 'PE-14'
       DEVICE_PATH:
-        description: 'Device Tree Path (relative to workspace root)'
+        description: 'Specify your Device Path' 
         required: true
         default: 'device/lava/lxx521'
       DEVICE_NAME:
-        description: 'Device Codename'
+        description: 'Specify your Device Codename' 
         required: true
         default: 'lxx521'
-      MAKEFILE_NAME:
-        description: 'Device Makefile Prefix (e.g. pe_lxx521, aosp_lxx521)'
-        required: true
-        default: 'pe_lxx521'
       BUILD_TARGET:
-        description: 'Target Image to Build'
+        description: 'Specify your Build Target' 
         required: true
-        default: 'vendorbootimage'
+        default: 'vendorboot'
         type: choice
         options:
-          - recoveryimage
-          - vendorbootimage
-          - bootimage
+          - boot
+          - recovery
+          - vendorboot
 
 jobs:
   build:
-    name: Build Pixel Experience Recovery
+    name: Build PE Recovery by ${{ github.actor }}
     runs-on: ubuntu-22.04
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: write
-
     steps:
-      - name: Clean Runner Space & Configure Swap
-        uses: easimon/maximize-build-space@master
+      - name: Check Out
+        uses: actions/checkout@v3
+
+      - name: Display Inputs
+        run: |
+          echo "::group::User Environment Variables"
+          echo "Displaying variables/inputs."
+          echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+          echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE }}"
+          echo "Device Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+          echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+          echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+          echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}image"
+          echo "::endgroup::"
+
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
         with:
-          root-reserve-mb: 2048
-          swap-size-mb: 16384
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
+          swap-size-gb: 24
 
-      - name: Verify 16 GiB Swap Space
+      - name: Prepare the environment
         run: |
-          CURRENT_SWAP_MB=$(free -m | awk '/^Swap:/ {print $2}')
-          echo "Current Swap size: ${CURRENT_SWAP_MB} MB"
-          
-          if [ "$CURRENT_SWAP_MB" -lt 16384 ]; then
-            echo "Allocating additional Swap to ensure 16 GiB target..."
-            sudo swapoff -a || true
-            sudo fallocate -l 16G /swapfile_extra || sudo dd if=/dev/zero of=/swapfile_extra bs=1M count=16384
-            sudo chmod 600 /swapfile_extra
-            sudo mkswap /swapfile_extra
-            sudo swapon /swapfile_extra
-          fi
-          
-          echo "Current Memory Status:"
-          free -h
+          sudo apt update
+          sudo apt -y upgrade
+          sudo apt -y install gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib lib32ncurses5-dev x11proto-core-dev lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libwxgtk3.0-gtk3-dev lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libtinfo5 libgflags-dev zstd
+          sudo add-apt-repository universe
+          sudo apt -y install libncurses5
 
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gawk git-core diffstat unzip texinfo gcc-multilib build-essential \
-            chrpath socat cpio python3 python3-pip python3-pexpect xz-utils \
-            debianutils iputils-ping python3-git python3-jinja2 libegl1-mesa \
-            libsdl1.2-dev xterm python3-subunit mesa-common-dev zstd liblz4-tool \
-            bc bison flex g++-multilib git gnupg gperf lib32ncurses5-dev \
-            lib32z1-dev liblibc6-dev-i386 libncurses5 libncurses5-dev \
-            libreadline-dev libgl1-mesa-dev libxml2-utils xsltproc zlib1g-dev
+      - name: Install OpenJDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 8
 
-      - name: Install Repo Tool
+      - name: Install Git-Repo
         run: |
-          mkdir -p ~/bin
+          mkdir ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
+          sudo ln -sf ~/bin/repo /usr/bin/repo
 
-      - name: Initialize & Sync Pixel Experience Source
+      - name: Initialize Repo
         run: |
-          mkdir workspace && cd workspace
+          mkdir workspace
+          cd workspace
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          repo init -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
+          repo init --depth=1 -u https://github.com/PixelExperience/manifest -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+
+      - name: Repo Sync
+        run: |
+          cd workspace
           repo sync -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
       - name: Clone Device Tree
         run: |
           cd workspace
-          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+          git clone ${{ github.event.inputs.DEVICE_TREE }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+          cd ${{ github.event.inputs.DEVICE_PATH }}
+          echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
-      - name: Build Pixel Experience Recovery Target
+      - name: Check Build Makefile
+        run: |
+          cd workspace
+          if [ -f ${{ github.event.inputs.DEVICE_PATH }}/pe_${{ github.event.inputs.DEVICE_NAME }}.mk ]; then
+              echo "DEVICE_MAKEFILE=pe_${{ github.event.inputs.DEVICE_NAME }}" >> $GITHUB_ENV
+          elif [ -f ${{ github.event.inputs.DEVICE_PATH }}/aosp_${{ github.event.inputs.DEVICE_NAME }}.mk ]; then
+              echo "DEVICE_MAKEFILE=aosp_${{ github.event.inputs.DEVICE_NAME }}" >> $GITHUB_ENV
+          else
+              echo "No PE makefile found!"
+          fi
+        continue-on-error: true
+
+      - name: Building Image 
         run: |
           cd workspace
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
-          
-          lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch ${{ github.event.inputs.MAKEFILE_NAME }}-userdebug
-          
+          lunch ${{ env.DEVICE_MAKEFILE }}-userdebug || lunch ${{ env.DEVICE_MAKEFILE }}-eng
           make clean
-          make ${{ github.event.inputs.BUILD_TARGET }} -j$(nproc --all)
+          make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+          echo "Done building your ${{ github.event.inputs.BUILD_TARGET }}.img"
 
-      - name: Prepare Built Images
+      - name: Set Build Date
+        run: |
+          echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          DEVICE_TREE_URL="${{ github.event.inputs.DEVICE_TREE }}"
+          if [[ "${DEVICE_TREE_URL}" == *.git ]]; then
+            DEVICE_TREE_URL="${DEVICE_TREE_URL%.git}"
+          fi
+          echo "DEVICE_TREE_URL=${DEVICE_TREE_URL}" >> $GITHUB_ENV
+
+      - name: Check if Recovery Exist
         run: |
           cd workspace
-          mkdir -p output
-          OUT_PATH="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-          
-          if [ -f "$OUT_PATH/recovery.img" ]; then
-            cp "$OUT_PATH/recovery.img" output/
-          fi
-          if [ -f "$OUT_PATH/vendor_boot.img" ]; then
-            cp "$OUT_PATH/vendor_boot.img" output/
-          fi
-          if [ -f "$OUT_PATH/boot.img" ]; then
-            cp "$OUT_PATH/boot.img" output/
+          OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+          if [ -f $OUT_DIR/vendor_boot.img ]; then
+              echo "RECOVERY_TYPE=vendor_boot" >> $GITHUB_ENV
+              echo "vendor_boot.img file found!"
+              echo "MD5_IMG=$(md5sum $OUT_DIR/vendor_boot.img | cut -d ' ' -f 1)" >> $GITHUB_ENV
+          elif [ -f $OUT_DIR/recovery.img ]; then
+              echo "RECOVERY_TYPE=recovery" >> $GITHUB_ENV
+              echo "recovery.img file found!"
+              echo "MD5_IMG=$(md5sum $OUT_DIR/recovery.img | cut -d ' ' -f 1)" >> $GITHUB_ENV
+          elif [ -f $OUT_DIR/boot.img ]; then
+              echo "RECOVERY_TYPE=boot" >> $GITHUB_ENV
+              echo "boot.img file found!"
+              echo "MD5_IMG=$(md5sum $OUT_DIR/boot.img | cut -d ' ' -f 1)" >> $GITHUB_ENV
+          else
+              echo "No Recovery image file found!"
+              exit 1
           fi
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: PE-Recovery-${{ github.event.inputs.DEVICE_NAME }}
-          path: workspace/output/*
-
-      - name: Create GitHub Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v1
-        if: success()
         with:
-          tag_name: PE-Recovery-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
-          name: Pixel Experience Recovery for ${{ github.event.inputs.DEVICE_NAME }}
-          files: workspace/output/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ env.RECOVERY_TYPE }}.img
+          name: Pixel Experience Recovery for ${{ github.event.inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
+          tag_name: ${{ github.run_id }}
+          body: |
+            Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
+            Target Image: ${{ github.event.inputs.BUILD_TARGET }}image
+            Device Tree: [Device Tree](${{ env.DEVICE_TREE_URL }}/tree/${{ github.event.inputs.DEVICE_TREE_BRANCH }})
+            Commit: [${{ env.COMMIT_ID }}](${{ env.DEVICE_TREE_URL }}/commit/${{ env.COMMIT_ID }})
+            MD5: ${{ env.MD5_IMG }}
