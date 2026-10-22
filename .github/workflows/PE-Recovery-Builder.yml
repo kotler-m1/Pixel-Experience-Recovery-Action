@@ -100,6 +100,20 @@ jobs:
           git config --global user.email "actions@github.com"
           repo init --depth=1 -u https://github.com/PixelExperience/manifest -b ${{ github.event.inputs.MANIFEST_BRANCH }}
 
+      - name: Remove Unreachable Repos
+        run: |
+          cd workspace
+          mkdir -p .repo/local_manifests
+          cat << 'EOF' > .repo/local_manifests/remove.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remove-project name="android_external_faceunlock" />
+            <remove-project name="android_vendor_gms" />
+            <remove-project name="external/faceunlock" />
+            <remove-project name="vendor/gms" />
+          </manifest>
+          EOF
+
       - name: Repo Sync
         run: |
           cd workspace
